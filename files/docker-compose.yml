@@ -1,0 +1,102 @@
+version: '3.9'
+
+# ============================================================
+# AutoApply AI — docker-compose.yml
+# Full-stack local development environment
+# ============================================================
+
+services:
+  # ── Next.js Frontend ──────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+    container_name: autoapply-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+      - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - autoapply-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Redis (caching + job queues) ──────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: autoapply-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    networks:
+      - autoapply-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── Background Job Worker ─────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: autoapply-worker
+    environment:
+      - SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REDIS_URL=redis://redis:6379
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      - SMTP_FROM=${SMTP_FROM:-noreply@autoapply.ai}
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - autoapply-net
+
+  # ── Nginx Reverse Proxy ───────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: autoapply-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - frontend
+    restart: unless-stopped
+    networks:
+      - autoapply-net
+
+volumes:
+  redis_data:
+    driver: local
+  nginx_logs:
+    driver: local
+
+networks:
+  autoapply-net:
+    driver: bridge

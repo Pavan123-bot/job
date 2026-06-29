@@ -1,0 +1,47 @@
+# ============================================================
+# AutoApply AI — Background Worker Dockerfile
+# Dockerfile.worker
+# Handles: daily job scans, email reports, scheduled automation
+# ============================================================
+
+FROM node:20-alpine
+
+# Install Playwright dependencies
+RUN apk add --no-cache \
+    chromium \
+    nss \
+    freetype \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont \
+    nodejs \
+    yarn
+
+# Tell Playwright to use installed Chromium
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV CHROMIUM_PATH=/usr/bin/chromium-browser
+ENV PLAYWRIGHT_BROWSERS_PATH=/usr/bin
+
+WORKDIR /app
+
+# Copy package files
+COPY package.json package-lock.json* ./
+RUN npm ci --only=production
+
+# Copy worker source
+COPY src/worker ./src/worker
+COPY src/services ./src/services
+COPY src/lib ./src/lib
+COPY src/types ./src/types
+COPY tsconfig.json ./
+
+# Build TypeScript
+RUN npx tsc --project tsconfig.json || true
+
+# Non-root user for security
+RUN addgroup -S worker && adduser -S worker -G worker
+USER worker
+
+EXPOSE 3001
+
+CMD ["node", "dist/worker/index.js"]
